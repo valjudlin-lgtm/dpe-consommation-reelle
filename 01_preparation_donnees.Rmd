@@ -1,0 +1,255 @@
+---
+title: "Data_wrangling"
+author: "Keevson Judlin VAL"
+date: "2026-10-19"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+## INstallation de packages et prises en main de la donnée 
+
+```{r}
+#install.packages("data.table")
+library(data.table)
+library(janitor)
+library(stringi)
+
+
+## La direction de mes fichiers 
+setwd("~/M2 SSD/projet_DPE")
+
+## lecture plus rapide avec fread 
+
+# Lecture des trois fichiers (remplace par les vrais noms de tes fichiers)
+dpe_existants <- fread("dpe03existant.csv", encoding = "UTF-8")
+dpe_neufs     <- fread("dpe02neuf.csv", encoding = "UTF-8")
+enedis        <- fread("consommation-annuelle-residentielle-par-adresse (1).csv", encoding = "UTF-8")
+
+# 1. On uniformise les noms dans CHAQUE fichier
+dpe_existants <- clean_names(dpe_existants)
+dpe_neufs     <- clean_names(dpe_neufs)
+
+### dim 
+dim(dpe_existants)
+dim(dpe_neufs)
+dim(enedis)
+
+## les colonnes 
+names(dpe_existants)
+names(enedis)
+
+```
+
+
+## Empilement des deux bases de données 
+
+```{r}
+
+
+# 2. On vérifie : y a-t-il encore des colonnes présentes d'un seul côté ?
+setdiff(names(dpe_existants), names(dpe_neufs))
+setdiff(names(dpe_neufs), names(dpe_existants)) # cela nous dit quelles sont present dans l"un mais pas dans l"autres 
+
+
+
+
+
+##Empilement 
+
+dpe_complet <- rbindlist(list(existant = dpe_existants, neuf = dpe_neufs), fill = T, idcol = "source")
+dim(dpe_complet)
+table(dpe_complet$source)
+
+## On va faire la jointure des données en mettant tout 
+##d'abord les adresses des deux bases de données dans le meme format 
+
+# Colonnes qui parlent d'adresse dans chaque fichier
+grep("adresse|ban|voie|rue|commune|insee|postal", names(dpe_complet), value = TRUE, ignore.case = TRUE)
+grep("adresse|ban|voie|rue|commune|insee|postal", names(enedis), value = TRUE, ignore.case = TRUE)
+
+# Trois exemples d'adresses de chaque côté
+head(dpe_complet[, grep("adresse", names(dpe_complet), ignore.case = TRUE), with = FALSE], 3)
+head(enedis[, grep("adresse|voie", names(enedis), ignore.case = TRUE), with = FALSE], 3)
+
+
+```
+
+
+
+
+## Normaliser les adresses 
+
+```{r}
+#install.packages(c("janitor", "stringi"))   # une seule fois
+
+# 1. Des noms de colonnes Enedis plus simples
+enedis <- clean_names(enedis)
+names(enedis)
+
+# 2. Une fonction qui standardise une adresse
+normaliser <- function(x) {
+  x <- tolower(x)
+  x <- stri_trans_general(x, "Latin-ASCII")
+  x <- gsub("[^a-z0-9 ]", " ", x)
+  x <- gsub("\\s+", " ", x)
+  x <- trimws(x)
+  
+  # 1. Compléments du numéro : "91 b" -> "91bis", "5 t" -> "5ter"
+  x <- gsub("^([0-9]+) ?b\\b", "\\1bis", x)
+  x <- gsub("^([0-9]+) ?t\\b", "\\1ter", x)
+  x <- gsub("^([0-9]+) ?q\\b", "\\1quater", x)
+  # puis on colle bis/ter/quater ou une lettre seule au numéro : "12 a" -> "12a"
+  x <- gsub("^([0-9]+) (bis|ter|quater|[a-z])\\b", "\\1\\2", x)
+  
+  # 2. Abréviations des types de voie (un petit dictionnaire)
+  abreviations <- c(crs = "cours", av = "avenue", bd = "boulevard",
+                    pl = "place", mte = "montee", imp = "impasse",
+                    qu = "quai", ch = "chemin", all = "allee",
+                    rte = "route", sq = "square",
+                    st = "saint", ste = "sainte",
+                    rgt = "regiment", dr = "docteur")
+  for (a in names(abreviations)) {
+    x <- gsub(paste0("\\b", a, "\\b"), abreviations[a], x)
+  }
+  # 3. Chiffres écrits en lettres, SAUF le numéro de l'immeuble au début
+  chiffres <- c("2" = "deux", "3" = "trois", "4" = "quatre", "5" = "cinq",
+                "6" = "six", "7" = "sept", "8" = "huit", "9" = "neuf")
+  for (n in names(chiffres)) {
+    x <- gsub(paste0(" ", n, " "), paste0(" ", chiffres[n], " "), x)
+  }
+  
+  # 4. On supprime les petits mots qui ne servent pas à identifier la rue
+  x <- gsub("\\b(de|du|des|la|le|les|l|d|et)\\b", " ", x)
+  x <- gsub("\\s+", " ", x)
+  trimws(x)
+}
+
+# 3. Côté DPE : on retire " 69008 Lyon" puis on standardise
+dpe_complet[, adresse_sans_ville := sub(" [0-9]{5} .*$", "", adresse_ban)]
+dpe_complet[, cle := normaliser(adresse_sans_ville)]
+
+
+# 4. Côté Enedis : l'adresse n'a déjà pas de ville, on standardise directement
+enedis[, cle := normaliser(adresse)]
+
+# 5. Vérification visuelle
+head(dpe_complet[, .(adresse_ban, cle)], 5)
+head(enedis[, .(adresse, cle)], 5)
+
+## TESTER COMBIEN D'ADRESSE se RETrouve 
+adr_dpe    <- unique(dpe_complet$cle)   # liste des adresses DPE, sans doublons
+adr_enedis <- unique(enedis$cle)        # liste des adresses Enedis, sans doublons
+
+length(adr_dpe)
+length(adr_enedis)
+
+# Part des adresses Enedis qu'on retrouve dans les DPE
+mean(adr_enedis %in% adr_dpe) # 91 % des adresses retrouvées
+
+# 20 exemples d'adresses Enedis qu'on ne retrouve PAS
+head(setdiff(adr_enedis, adr_dpe), 20)
+length(setdiff(adr_enedis, adr_dpe))
+
+### TROUVONS TOUS LES ABREVIATIONS QUI POSENT PROBLEMES 
+
+non_trouvees <- setdiff(adr_enedis, adr_dpe)
+
+# On découpe chaque adresse en mots, et on prend le 2e mot (le type de voie)
+deuxieme_mot <- sapply(strsplit(non_trouvees, " "), `[`, 2)
+
+# On compte les plus fréquents
+sort(table(deuxieme_mot), decreasing = TRUE)[1:15]
+```
+
+
+On est passé à 91 %, avec seulement 1 201 adresses non retrouvées sur 13 711
+
+
+## Preparons la jointure 
+
+```{r}
+# Combien d'années Enedis avons nous ?
+
+table(enedis$annee) ## Ca commence donc en 2019 jusqu'a 2025
+
+# Combien de DPE y a par adresse
+
+dpe_par_adresse <- dpe_complet[,.N, by = cle]
+summary(dpe_par_adresse$N)
+table(cut(dpe_par_adresse$N, breaks = c(0,1,2,5,10,Inf)))
+
+## Anomalie, on enquete 
+# Les 10 adresses qui ont le plus de DPE
+dpe_par_adresse[order(-N)][1:10]
+
+# On regarde la première de près
+adresse_max <- dpe_par_adresse[order(-N)][1, cle]
+adresse_max
+head(dpe_complet[cle == adresse_max,
+                 .(adresse_ban, complement_adresse_batiment, complement_adresse_logement)], 15)
+```
+- Médiane = 6 : la moitié des adresses ont 6 DPE ou moins.
+-Moyenne = 11 : plus élevée que la médiane, ce qui signifie que quelques adresses ont beaucoup de DPE et « tirent » la moyenne vers le haut d'ou une asymetrie vers le haut. 
+- *3 140* adresses n’ont qu’un seul DPE : pour elles, on supposera que ce DPE représente tout l’immeuble
+
+
+
+## regardons le contenu des variables cles 
+
+```{r}
+# Variables "catégories" : quelles valeurs, et combien de fois ?
+table(dpe_complet$etiquette_dpe, useNA = "ifany")
+table(dpe_complet$type_batiment, useNA = "ifany")
+table(dpe_complet$type_energie_principale_chauffage, useNA = "ifany")
+table(dpe_complet$type_energie_n1, useNA = "ifany")
+
+# Variables "nombres" : sont-elles bien lues comme des nombres ?
+class(dpe_complet$conso_5_usages_ef_energie_n1)
+class(dpe_complet$surface_habitable_logement)
+summary(dpe_complet$conso_5_usages_ef_energie_n1)
+summary(dpe_complet$surface_habitable_logement)
+```
+
+
+appartement	219 331
+immeuble	5 090
+maison	2 501
+
+Donc on enléve toutes les dpe des maisons et aussi ceux des immeubles pour ne pas faire explosé nos calculs 
+
+
+## premier Filtrage 
+
+```{r}
+nrow(dpe_complet)                         # point de départ : 226 922
+
+# Filtre 1 : on garde seulement les appartements
+dpe <- dpe_complet[type_batiment == "appartement"]
+nrow(dpe)
+
+# Filtre 2 : surface connue et plausible (entre 9 et 250 m²)
+dpe <- dpe[!is.na(surface_habitable_logement) &
+           surface_habitable_logement >= 9 &
+           surface_habitable_logement <= 250]
+nrow(dpe)
+
+# Ce que deviennent la surface et la consommation après filtrage
+summary(dpe$surface_habitable_logement)
+summary(dpe$conso_5_usages_ef_energie_n1)
+
+# Pour la suite : les colonnes qui identifient un DPE et sa date
+grep("n_dpe|numero|date|remplac", names(dpe), value = TRUE)
+```
+
+
+
+
+
+
+
+
+
+

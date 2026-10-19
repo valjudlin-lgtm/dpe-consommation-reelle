@@ -1,0 +1,20 @@
+# Données : trop lourdes pour GitHub (limite de 100 Mo par fichier) et déjà
+# publiques. Chaque contributeur les télécharge lui-même (voir README).
+*.csv
+*.csv.gz
+*.parquet
+*.xlsx
+
+# Rapport généré par Knit (se régénère à partir du Rmd)
+*.html
+*_files/
+*_cache/
+
+# Fichiers générés par R et RStudio
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+
+# Système (macOS)
+.DS_Store
