@@ -19,7 +19,7 @@ library(stringi)
 
 
 ## La direction de mes fichiers 
-setwd("~/M2 SSD/projet_DPE")
+setwd("/Users/keevsonval/Documents/GitHub/dpe-consommation-reelle")
 
 ## lecture plus rapide avec fread 
 
@@ -220,7 +220,7 @@ maison	2 501
 
 Donc on enléve toutes les dpe des maisons et aussi ceux des immeubles pour ne pas faire explosé nos calculs 
 
-
+# Filtrage
 ## premier Filtrage 
 
 ```{r}
@@ -242,6 +242,55 @@ summary(dpe$conso_5_usages_ef_energie_n1)
 
 # Pour la suite : les colonnes qui identifient un DPE et sa date
 grep("n_dpe|numero|date|remplac", names(dpe), value = TRUE)
+```
+
+## Traitement des doublons
+
+```{r}
+# 1. Copies exactes : même numéro de DPE présent plusieurs fois
+sum(duplicated(dpe$numero_dpe))
+dpe <- unique(dpe, by = "numero_dpe")
+nrow(dpe)
+
+# 2. DPE remplacés : on retire les anciennes versions
+sum(dpe$numero_dpe %in% dpe$numero_dpe_remplace)
+dpe <- dpe[!numero_dpe %in% numero_dpe_remplace]
+nrow(dpe)
+
+# 3. Combien en reste-t-il à l'adresse suspecte ?
+dpe[cle == adresse_max, .N]
+
+# 4. Comment ont-ils été établis ?
+dpe[cle == adresse_max, .N, by = methode_application_dpe]
+```
+
+
+
+
+
+
+## nombre de DPE_apres filtrage 
+
+```{r}
+# Nombre de DPE par adresse APRÈS les deux premiers filtres
+dpe_par_adresse_filtre <- dpe[, .N, by = cle]
+summary(dpe_par_adresse_filtre$N)
+table(cut(dpe_par_adresse_filtre$N, breaks = c(0, 1, 2, 5, 10, Inf)))
+
+# Combien de DPE reste-t-il à l'adresse suspecte ?
+dpe_par_adresse_filtre[cle == adresse_max]
+
+# 1. À l'adresse suspecte : combien de DPE de chaque méthode ?
+dpe[cle == adresse_max, .N, by = methode_application_dpe]
+
+# 2. Les 8 bâtiments en série : combien de DPE par bâtiment et par année ?
+dpe[cle == adresse_max & grepl("^c520416735404", complement_adresse_batiment),
+    .N,
+    by = .(complement_adresse_batiment,
+           annee = substr(date_etablissement_dpe, 1, 4))][order(complement_adresse_batiment, annee)]
+
+# 3. Dans TOUT Lyon : quelle part des DPE est générée à partir d'un DPE immeuble ?
+table(dpe$methode_application_dpe, useNA = "ifany")
 ```
 
 
