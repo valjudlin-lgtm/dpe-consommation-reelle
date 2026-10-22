@@ -61,10 +61,9 @@ setdiff(names(dpe_neufs), names(dpe_existants)) # cela nous dit quelles sont pre
 
 dpe_complet <- rbindlist(list(existant = dpe_existants, neuf = dpe_neufs), fill = T, idcol = "source")
 dim(dpe_complet)
-table(dpe_complet$source)
+table(dpe_complet$source) # ce qui nous permet de revenir à l'etape initiale
 
-## On va faire la jointure des données en mettant tout 
-##d'abord les adresses des deux bases de données dans le meme format 
+##Mettons d'abord les adresses des deux bases de données dans le meme format 
 
 # Colonnes qui parlent d'adresse dans chaque fichier
 grep("adresse|ban|voie|rue|commune|insee|postal", names(dpe_complet), value = TRUE, ignore.case = TRUE)
@@ -80,61 +79,145 @@ head(enedis[, grep("adresse|voie", names(enedis), ignore.case = TRUE), with = FA
 
 
 
-## Normaliser les adresses 
+# Normaliser les adresses 
 
+
+## Harmoniser le code des communes(surtout celui des grandes villes) 
+```{r}
+# Paris, Marseille et Lyon ont un code par arrondissement (69381 à 69389 pour Lyon)
+# EN PLUS du code de la commune (69123). Selon la base, l'un ou l'autre est utilisé :
+# on ramène tout au code de la commune pour que les deux bases parlent pareil.
+# On remet aussi le zéro perdu quand R lit un code comme un nombre (1053 -> "01053").
+harmoniser_code_commune <- function(code) {
+  code <- as.character(code)
+  code <- ifelse(nchar(code) == 4, paste0("0", code), code)
+  code[code %in% as.character(75101:75120)] <- "75056"   # Paris
+  code[code %in% as.character(13201:13216)] <- "13055"   # Marseille
+  code[code %in% as.character(69381:69389)] <- "69123"   # Lyon
+  code
+}
+```
+
+## La fonction normaliser
 ```{r}
 #install.packages(c("janitor", "stringi"))   # une seule fois
 
 # 1. Des noms de colonnes Enedis plus simples
 enedis <- clean_names(enedis)
-names(enedis)
+names(enedis$cle)
 
-# 2. Une fonction qui standardise une adresse
+# 2. La fonction qui normalise 
 normaliser <- function(x) {
   x <- tolower(x)
   x <- stri_trans_general(x, "Latin-ASCII")
   x <- gsub("[^a-z0-9 ]", " ", x)
   x <- gsub("\\s+", " ", x)
   x <- trimws(x)
-  
-  # 1. Compléments du numéro : "91 b" -> "91bis", "5 t" -> "5ter"
+
+  # 1. Compléments du numéro : "91 b" -> "91bis", "12 a" -> "12a"
   x <- gsub("^([0-9]+) ?b\\b", "\\1bis", x)
   x <- gsub("^([0-9]+) ?t\\b", "\\1ter", x)
   x <- gsub("^([0-9]+) ?q\\b", "\\1quater", x)
-  # puis on colle bis/ter/quater ou une lettre seule au numéro : "12 a" -> "12a"
   x <- gsub("^([0-9]+) (bis|ter|quater|[a-z])\\b", "\\1\\2", x)
-  
-  # 2. Abréviations des types de voie (un petit dictionnaire)
-  abreviations <- c(crs = "cours", av = "avenue", bd = "boulevard",
-                    pl = "place", mte = "montee", imp = "impasse",
-                    qu = "quai", ch = "chemin", all = "allee",
-                    rte = "route", sq = "square",
-                    st = "saint", ste = "sainte",
-                    rgt = "regiment", dr = "docteur")
-  for (a in names(abreviations)) {
-    x <- gsub(paste0("\\b", a, "\\b"), abreviations[a], x)
+
+  # 2. Types de voie : remplacés UNIQUEMENT juste après le numéro
+  types_voie <- c(
+    r = "rue", ru = "rue",
+    av = "avenue", ave = "avenue", avn = "avenue",
+    bd = "boulevard", bld = "boulevard", blvd = "boulevard", boul = "boulevard",
+    pl = "place", pla = "place",
+    crs = "cours", c = "cours",
+    imp = "impasse", ipp = "impasse",
+    all = "allee", al = "allee",
+    ch = "chemin", chem = "chemin", che = "chemin",
+    qu = "quai", qai = "quai",
+    rte = "route", rt = "route",
+    mte = "montee", mont = "montee",
+    pass = "passage", pas = "passage",
+    sq = "square",
+    prom = "promenade",
+    esp = "esplanade",
+    fg = "faubourg", fbg = "faubourg",
+    sen = "sentier", sent = "sentier",
+    vla = "villa",
+    res = "residence", resid = "residence",
+    lot = "lotissement",
+    ham = "hameau",
+    carr = "carrefour", car = "carrefour",
+    rpt = "rond point", rdpt = "rond point",
+    dom = "domaine",
+    cite = "cite", cit = "cite",
+    pkg = "parking",
+    za = "zone activite", zi = "zone industrielle",
+    gr = "grande", grde = "grande"
+  )
+  for (a in names(types_voie)) {
+    x <- gsub(paste0("^(\\S+) ", a, "\\b"), paste0("\\1 ", types_voie[a]), x)
   }
-  # 3. Chiffres écrits en lettres, SAUF le numéro de l'immeuble au début
+
+  # 3. Titres et mots courants : remplacés partout (abréviations non ambiguës)
+  titres <- c(
+    st = "saint", ste = "sainte", sts = "saints",
+    gal = "general", gen = "general",
+    mal = "marechal", marech = "marechal",
+    pdt = "president", pres = "president",
+    cdt = "commandant", cmdt = "commandant",
+    cne = "capitaine", cap = "capitaine",
+    lt = "lieutenant", ltn = "lieutenant",
+    dr = "docteur", doct = "docteur",
+    pr = "professeur", prof = "professeur",
+    mgr = "monseigneur",
+    abb = "abbe",
+    nd = "notre dame",
+    rgt = "regiment", reg = "regiment",
+    fr = "freres"
+  )
+  for (a in names(titres)) {
+    x <- gsub(paste0("\\b", a, "\\b"), titres[a], x)
+  }
+
+  # 4. Chiffres en lettres dans le nom de la rue (pas le numéro de l'immeuble)
   chiffres <- c("2" = "deux", "3" = "trois", "4" = "quatre", "5" = "cinq",
                 "6" = "six", "7" = "sept", "8" = "huit", "9" = "neuf")
   for (n in names(chiffres)) {
     x <- gsub(paste0(" ", n, " "), paste0(" ", chiffres[n], " "), x)
   }
-  
-  # 4. On supprime les petits mots qui ne servent pas à identifier la rue
-  x <- gsub("\\b(de|du|des|la|le|les|l|d|et)\\b", " ", x)
+
+  # 5. Petits mots non discriminants
+  x <- gsub("\\b(de|du|des|la|le|les|l|d|et|a|aux|au)\\b", " ", x)
   x <- gsub("\\s+", " ", x)
   trimws(x)
 }
 
+```
+
+
+## Tester la fonction 
+```{r}
+# Tests : chaque ligne doit afficher TRUE
+normaliser("161 CRS ALBERT THOMAS")          == "161 cours albert thomas"
+normaliser("91 B AVENUE 25E RGT T SENEGALAIS") == "91bis avenue 25e regiment t senegalais"
+normaliser("12 R DU GAL LECLERC")            == "12 rue general leclerc"
+normaliser("5 Rue du Général Leclerc")       == "5 rue general leclerc"
+normaliser("8 BD DES 3 ROIS")                == "8 boulevard trois rois"
+normaliser("3 Rue C. Dupont")                == "3 rue c dupont"
+```
+
+il y a bien une adresse qui nous envoie la valeur FALSE c-a-d qu'on arrive pas a normaliser, on le laisse ainsi parce qu'a la fin on arrive a recupere une grande partie des adresses. 
+
+## Cote dpe et ennedis 
+
+```{r}
+
 # 3. Côté DPE : on retire " 69008 Lyon" puis on standardise
 dpe_complet[, adresse_sans_ville := sub(" [0-9]{5} .*$", "", adresse_ban)]
-dpe_complet[, cle := normaliser(adresse_sans_ville)]
+dpe_complet[, cle := paste(harmoniser_code_commune(code_insee_ban),
+                           normaliser(adresse_sans_ville), sep = "|")]
 
 
 # 4. Côté Enedis : l'adresse n'a déjà pas de ville, on standardise directement
-enedis[, cle := normaliser(adresse)]
-
+enedis[, cle := paste(harmoniser_code_commune(code_commune),
+                      normaliser(adresse), sep = "|")]
 # 5. Vérification visuelle
 head(dpe_complet[, .(adresse_ban, cle)], 5)
 head(enedis[, .(adresse, cle)], 5)
@@ -148,14 +231,17 @@ length(adr_enedis)
 
 # Part des adresses Enedis qu'on retrouve dans les DPE
 mean(adr_enedis %in% adr_dpe) # 91 % des adresses retrouvées
+# Part des adresses de DPE qu'on retrouve dans Enedis ?
+mean(adr_dpe %in% adr_enedis)
 
 # 20 exemples d'adresses Enedis qu'on ne retrouve PAS
 head(setdiff(adr_enedis, adr_dpe), 20)
-length(setdiff(adr_enedis, adr_dpe))
+length(setdiff(adr_enedis, adr_dpe))# nombre d'adresse d'enedis parmi les 13711 qui sont different de celui des adresses de dpe. 
 
 ### TROUVONS TOUS LES ABREVIATIONS QUI POSENT PROBLEMES 
-
+## on les mets dans un vexteur d'adresse tous les adresse non trouvees
 non_trouvees <- setdiff(adr_enedis, adr_dpe)
+length(non_trouvees)
 
 # On découpe chaque adresse en mots, et on prend le 2e mot (le type de voie)
 deuxieme_mot <- sapply(strsplit(non_trouvees, " "), `[`, 2)
@@ -165,11 +251,12 @@ sort(table(deuxieme_mot), decreasing = TRUE)[1:15]
 ```
 
 
-On est passé à 91 %, avec seulement 1 201 adresses non retrouvées sur 13 711
+On est passé à 91.4 %, avec seulement 1 178 adresses non retrouvées sur 13 711. Ce qui est acceptable pour notre analyse car de toute facon ce qui nous importe c'est de comparer les conso avec les valeurs reelles de ennedis. 
 
 
-## Preparons la jointure 
+# Preparons la jointure 
 
+## verifions la constitution des données. 
 ```{r}
 # Combien d'années Enedis avons nous ?
 
@@ -191,13 +278,14 @@ adresse_max
 head(dpe_complet[cle == adresse_max,
                  .(adresse_ban, complement_adresse_batiment, complement_adresse_logement)], 15)
 ```
+
 - Médiane = 6 : la moitié des adresses ont 6 DPE ou moins.
 -Moyenne = 11 : plus élevée que la médiane, ce qui signifie que quelques adresses ont beaucoup de DPE et « tirent » la moyenne vers le haut d'ou une asymetrie vers le haut. 
 - *3 140* adresses n’ont qu’un seul DPE : pour elles, on supposera que ce DPE représente tout l’immeuble
+- Il va falloir qu'on filtre, il y a des adresses qui sont celles des grandes residences avec plusieurs immeubles/ maisons/ appartements.
+- Les anomalies nous permettent de se poser la question est ce que c'est des appartement ou des immeubles ou des maisons 
 
-
-
-## regardons le contenu des variables cles 
+## regardons le contenu des variables cles leur type de logement associés
 
 ```{r}
 # Variables "catégories" : quelles valeurs, et combien de fois ?
@@ -211,6 +299,7 @@ class(dpe_complet$conso_5_usages_ef_energie_n1)
 class(dpe_complet$surface_habitable_logement)
 summary(dpe_complet$conso_5_usages_ef_energie_n1)
 summary(dpe_complet$surface_habitable_logement)
+
 ```
 
 
@@ -218,7 +307,8 @@ appartement	219 331
 immeuble	5 090
 maison	2 501
 
-Donc on enléve toutes les dpe des maisons et aussi ceux des immeubles pour ne pas faire explosé nos calculs 
+Donc on va enlever toutes les dpe des maisons et aussi ceux des immeubles pour ne pas faire explosé nos calculs. Apres ce filtrage on a compris pourquoi on avait plus de 1558 dpe par adresse. 
+Autres choses, on peut aussi constater que il y a plusieurs autres types d'energie de consommation(bois, electricité, gaz); Ce qui va nous etre utile pour la suite de notre analyse. 
 
 # Filtrage
 ## premier Filtrage 
@@ -239,12 +329,16 @@ nrow(dpe)
 # Ce que deviennent la surface et la consommation après filtrage
 summary(dpe$surface_habitable_logement)
 summary(dpe$conso_5_usages_ef_energie_n1)
+names(dpe)
+table
+dpe_par_adresse <- dpe[,.N, by = cle]
+summary(dpe_par_adresse$N) ## on a toujours 1359 Dpe par adresse, on va verifie quelle est la cause. 
 
 # Pour la suite : les colonnes qui identifient un DPE et sa date
 grep("n_dpe|numero|date|remplac", names(dpe), value = TRUE)
 ```
 
-## Traitement des doublons
+# Dedoublonnages
 
 ```{r}
 # 1. Copies exactes : même numéro de DPE présent plusieurs fois
@@ -265,33 +359,181 @@ dpe[cle == adresse_max, .N, by = methode_application_dpe]
 ```
 
 
+# DPE générés en double
 
+Les DPE « générés à partir des données DPE immeuble » sont fabriqués automatiquement
+à partir d'un seul diagnostic de l'immeuble. Quand ce diagnostic est refait, le logiciel
+refabrique tous les DPE d'appartement, avec de nouveaux numéros : un même logement apparaît
+alors plusieurs fois (ex. : 173 avenue Barthélémy Buyer, 8 bâtiments diagnostiqués 4 fois
+entre le 1er et le 9 décembre 2023).
 
-
-
-## nombre de DPE_apres filtrage 
+Règle : pour chaque bâtiment d'une adresse, on garde seulement la campagne la plus récente.
+Les DPE établis appartement par appartement ne sont pas concernés.
 
 ```{r}
-# Nombre de DPE par adresse APRÈS les deux premiers filtres
-dpe_par_adresse_filtre <- dpe[, .N, by = cle]
-summary(dpe_par_adresse_filtre$N)
-table(cut(dpe_par_adresse_filtre$N, breaks = c(0, 1, 2, 5, 10, Inf)))
+methode_generee <- "dpe appartement généré à partir des données DPE immeuble"
 
-# Combien de DPE reste-t-il à l'adresse suspecte ?
-dpe_par_adresse_filtre[cle == adresse_max]
+# Pour les DPE générés : date de la dernière campagne de leur bâtiment
+dpe[methode_application_dpe == methode_generee,
+    date_derniere_campagne := max(date_etablissement_dpe),
+    by = .(cle, complement_adresse_batiment)]
 
-# 1. À l'adresse suspecte : combien de DPE de chaque méthode ?
+# On garde les DPE non générés, et les DPE générés de la dernière campagne
+nrow(dpe)
+dpe <- dpe[methode_application_dpe != methode_generee |
+           date_etablissement_dpe == date_derniere_campagne]
+nrow(dpe)
+
+# Vérification sur la résidence : on attend 214 DPE générés
 dpe[cle == adresse_max, .N, by = methode_application_dpe]
-
-# 2. Les 8 bâtiments en série : combien de DPE par bâtiment et par année ?
-dpe[cle == adresse_max & grepl("^c520416735404", complement_adresse_batiment),
-    .N,
-    by = .(complement_adresse_batiment,
-           annee = substr(date_etablissement_dpe, 1, 4))][order(complement_adresse_batiment, annee)]
-
-# 3. Dans TOUT Lyon : quelle part des DPE est générée à partir d'un DPE immeuble ?
-table(dpe$methode_application_dpe, useNA = "ifany")
 ```
+
+
+# Consommation électrique estimée par le DPE
+
+Un logement peut utiliser jusqu'à trois énergies (n1 à n3). Chaque colonne
+`conso_5_usages_ef_energie_nX` donne la consommation de l'énergie nX, en énergie finale.
+Enedis ne mesure que l'électricité : on additionne donc les postes dont l'énergie est
+« Électricité ». Même un logement chauffé au gaz en a un peu (éclairage, ventilation).
+
+```{r}
+dpe[, conso_elec_dpe := 0]
+for (k in 1:3) {
+  col_energie <- paste0("type_energie_n", k)
+  col_conso   <- paste0("conso_5_usages_ef_energie_n", k)
+  dpe[get(col_energie) == "Électricité" & !is.na(get(col_conso)),
+      conso_elec_dpe := conso_elec_dpe + get(col_conso)]
+}
+
+# Ramenée au m², pour comparer des logements de tailles différentes
+dpe[, conso_elec_dpe_m2 := conso_elec_dpe / surface_habitable_logement]
+
+summary(dpe$conso_elec_dpe)
+summary(dpe$conso_elec_dpe_m2)
+quantile(dpe$conso_elec_dpe_m2, c(0.5, 0.9, 0.99, 0.999), na.rm = TRUE)
+```
+
+
+# Valeurs aberrantes
+
+Les valeurs les plus extrêmes viennent presque toutes de DPE générés dont le logiciel a
+recopié la consommation de tout l'immeuble dans chaque appartement. On retire :
+
+1. tous les DPE des immeubles « parents » concernés (même ceux sous le seuil, puisque tous
+   leurs DPE sont faux) ;
+2. les DPE au-delà de 500 kWh/m²/an d'électricité (plus du double d'un logement tout
+   électrique très mal isolé ; 99 % des DPE sont sous 279) ;
+3. les consommations électriques nulles (impossibles : il y a au moins l'éclairage).
+
+```{r}
+seuil_elec_m2 <- 500
+
+parents_suspects <- dpe[conso_elec_dpe_m2 > seuil_elec_m2 &
+                        !is.na(numero_dpe_immeuble_associe) &
+                        numero_dpe_immeuble_associe != "",
+                        unique(numero_dpe_immeuble_associe)]
+length(parents_suspects)
+
+nrow(dpe)
+dpe <- dpe[!numero_dpe_immeuble_associe %in% parents_suspects]
+nrow(dpe)
+dpe <- dpe[conso_elec_dpe_m2 <= seuil_elec_m2]
+nrow(dpe)
+dpe <- dpe[conso_elec_dpe > 0]
+nrow(dpe)
+
+# Vérification : la moyenne doit se rapprocher de la médiane, le maximum passer sous 500
+summary(dpe$conso_elec_dpe)
+summary(dpe$conso_elec_dpe_m2)
+```
+
+
+# Allègement : on ne garde que les colonnes utiles
+
+On passe d'environ 230 colonnes à une vingtaine, choisies à partir de nos questions.
+
+```{r}
+colonnes_utiles <- c(
+  # identifier le DPE
+  "numero_dpe", "methode_application_dpe", "date_etablissement_dpe", "source",
+  # relier à Enedis
+  "cle", "adresse_ban", "code_insee_ban",
+  # consommation électrique estimée (calculée plus haut)
+  "conso_elec_dpe", "conso_elec_dpe_m2",
+  # classe
+  "etiquette_dpe", "etiquette_ges",
+  # caractéristiques du logement
+  "surface_habitable_logement", "periode_construction", "annee_construction",
+  "type_energie_principale_chauffage", "type_energie_principale_ecs",
+  "type_installation_chauffage", "numero_etage_appartement"
+)
+
+# Noms absents du tableau (doit afficher character(0) ; sinon, corriger la liste)
+setdiff(colonnes_utiles, names(dpe))
+
+dpe_leger <- dpe[, intersect(colonnes_utiles, names(dpe)), with = FALSE]
+dim(dpe_leger)
+```
+
+
+# Préparation d'Enedis : une ligne par adresse
+
+On garde les années 2022 à 2025 (période des DPE, depuis juillet 2021) et on en fait la
+moyenne, pour lisser les effets de la météo d'une année particulière.
+
+Deux adresses Enedis peuvent avoir la même clé après normalisation (ex. « 91 B » et
+« 91bis ») : on additionne donc d'abord les consommations et les logements de même clé,
+pour chaque année, avant de calculer la moyenne par logement.
+
+```{r}
+# Vérification des noms de colonnes Enedis
+grep("consommation|logement", names(enedis), value = TRUE)
+
+# 1. Une ligne par adresse et par année
+enedis_annee <- enedis[annee >= 2022,
+                       .(conso_totale_mwh = sum(consommation_annuelle_totale_de_ladresse_m_wh),
+                         nb_logements     = sum(nombre_de_logements)),
+                       by = .(cle, annee)]
+
+# 2. Une ligne par adresse : moyenne des années, conversion MWh -> kWh
+enedis_adresse <- enedis_annee[, .(
+  nb_logements     = round(mean(nb_logements)),
+  conso_reelle_kwh = 1000 * mean(conso_totale_mwh / nb_logements),
+  n_annees         = .N
+), by = cle]
+
+nrow(enedis_adresse)
+summary(enedis_adresse$conso_reelle_kwh)
+table(enedis_adresse$n_annees)
+```
+
+
+
+# Tableau B : une ligne par DPE
+
+Chaque DPE reçoit la consommation moyenne de son immeuble. Les DPE d'une même adresse
+partagent donc la même consommation réelle : il faudra en tenir compte dans la
+modélisation (modèle mixte avec un effet aléatoire par adresse).
+
+```{r}
+tableau_b <- merge(dpe_leger, enedis_adresse, by = "cle")
+tableau_b[, ecart_kwh := conso_reelle_kwh - conso_elec_dpe]
+dim(tableau_b)
+
+# Contrôle : chaque adresse du tableau B se retrouve bien dans le tableau A
+#all(unique(tableau_b$cle) %in% tableau_a$cle)
+```
+
+
+# Sauvegarde
+
+Les fichiers .csv ne sont pas envoyés sur GitHub (voir .gitignore).
+
+```{r}
+fwrite(tableau_a, "tableau_a_adresses.csv")
+fwrite(tableau_b, "tableau_b_dpe.csv")
+```
+
 
 
 
