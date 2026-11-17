@@ -16,6 +16,7 @@ output:
 library(data.table)
 library(janitor)
 library(stringi)
+source("selection_variables.R")    # charge les fonctions du protocole
 
 
 ## La direction de mes fichiers 
@@ -448,6 +449,33 @@ summary(dpe$conso_elec_dpe_m2)
 ```
 
 
+
+# Sélection des variables — étape 1 : règles de filtrage
+
+```{r}
+candidates_dpe <- c("surface_habitable_logement", "periode_construction",
+                    "annee_construction", "typologie_logement",
+                    "type_energie_principale_chauffage",
+                    "type_generateur_chauffage_principal",
+                    "type_energie_principale_ecs", "type_installation_chauffage",
+                    "type_installation_ecs", "numero_etage_appartement",
+                    "qualite_isolation_enveloppe", "qualite_isolation_murs",
+                    "qualite_isolation_menuiseries")
+
+# Noms absents de notre fichier (à vérifier, puis on continue sans eux)
+setdiff(candidates_dpe, names(dpe))
+candidates_dpe <- intersect(candidates_dpe, names(dpe))
+
+# Règles R4 (manquants) et R5 (variable quasi constante)
+audit <- audit_variables(dpe, candidates_dpe)
+audit
+
+# Règle R6 (variables jumelles)
+paires_redondantes(dpe, audit[decision == "Retenue", variable])
+```
+
+
+
 # Allègement : on ne garde que les colonnes utiles
 
 On passe d'environ 230 colonnes à une vingtaine, choisies à partir de nos questions.
@@ -525,13 +553,41 @@ dim(tableau_b)
 ```
 
 
+# Sélection des variables — étape 3 : confirmation par les données
+
+```{r}
+# 3a. L'étiquette apporte-t-elle quelque chose au-delà de l'ajustement ?
+tableau_a[, chauffage_electrique := chauffage_mode == "Électricité"]
+
+res <- comparer_modeles(
+  tableau_a,
+  y                = "conso_reelle_kwh",
+  ajustement       = c("surface_moy", "chauffage_mode", "periode_mode"),
+  interet          = "etiquette_mode",
+  interaction_avec = "chauffage_electrique",
+  poids            = "nb_logements"
+)
+res$tableau
+
+# 3b-c. Quelles variables secondaires ajouter ? (Lasso + stabilité)
+selection_stabilite(
+  tableau_a,
+  y          = "conso_reelle_kwh",
+  forcees    = c("surface_moy", "chauffage_mode", "periode_mode", "etiquette_mode"),
+  candidates = c("part_F_G", "part_dpe_generes", "taux_couverture")
+)
+```
+
+
+
+
 # Sauvegarde
 
 Les fichiers .csv ne sont pas envoyés sur GitHub (voir .gitignore).
 
 ```{r}
-fwrite(tableau_a, "tableau_a_adresses.csv")
-fwrite(tableau_b, "tableau_b_dpe.csv")
+#fwrite(tableau_a, "tableau_a_adresses.csv")
+# fwrite(tableau_b, "tableau_b_dpe.csv")
 ```
 
 
