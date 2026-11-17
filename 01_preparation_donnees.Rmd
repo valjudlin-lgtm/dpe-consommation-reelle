@@ -16,6 +16,7 @@ output:
 library(data.table)
 library(janitor)
 library(stringi)
+library(glmnet)                    # install.packages("glmnet") une seule fois
 source("selection_variables.R")    # charge les fonctions du protocole
 
 
